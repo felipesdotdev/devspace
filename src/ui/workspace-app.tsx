@@ -273,7 +273,7 @@ function AppRoot() {
           )}
         </button>
 
-        {expanded ? (
+        {expanded && loadState !== "loading" ? (
           <div className="tool-body">
             <ToolPayloadView
               card={card}
