@@ -233,6 +233,11 @@ async function renderPayloadIfNeeded(): Promise<void> {
   }
 
   if (shouldUseHeavyPayload(card)) {
+    if (currentPayload) {
+      currentPayload.update({ card, hostContext, errorMessage });
+      return;
+    }
+
     renderStatus(target, "Loading details...");
 
     const { mountHeavyPayload } = await import("./heavy-payload.js");
@@ -247,6 +252,11 @@ async function renderPayloadIfNeeded(): Promise<void> {
   }
 
   if (isReviewTool(card.tool)) {
+    if (currentPayload) {
+      currentPayload.update({ card, hostContext, errorMessage });
+      return;
+    }
+
     renderStatus(target, "Loading review...");
 
     const { mountReviewPayload } = await import("./review-payload.js");

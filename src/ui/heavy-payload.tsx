@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { FileStream, getFiletypeFromFileName } from "@pierre/diffs";
 import type { FileStreamOptions } from "@pierre/diffs";
@@ -92,14 +92,17 @@ function FilePayload({
   themeType: ThemeType;
 }) {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
-  const fileOptions: FileStreamOptions = {
-    theme: {
-      light: "pierre-light",
-      dark: "pierre-dark",
-    },
-    themeType,
-    overflow: "scroll",
-  };
+  const fileOptions: FileStreamOptions = useMemo(
+    () => ({
+      theme: {
+        light: "pierre-light",
+        dark: "pierre-dark",
+      },
+      themeType,
+      overflow: "scroll",
+    }),
+    [themeType],
+  );
 
   useEffect(() => {
     const wrapper = wrapperRef.current;
