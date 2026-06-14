@@ -17,6 +17,12 @@ import * as z from "zod/v4";
 import { createAutoCommitManager } from "./autocommit/manager.js";
 import { loadConfig, type ServerConfig } from "./config.js";
 import {
+  logEvent,
+  requestIp,
+  requestPath,
+  sessionIdPrefix,
+} from "./logger.js";
+import {
   editFileTool,
   findFilesTool,
   grepFilesTool,
@@ -165,6 +171,21 @@ function sendJsonRpcError(
     error: { code, message },
     id: null,
   });
+}
+
+function requestLogFields(req: Request, config: ServerConfig): Record<string, unknown> {
+  return {
+    ip: requestIp(req, config.logging.trustProxy),
+    host: req.header("host"),
+    userAgent: req.header("user-agent"),
+    origin: req.header("origin"),
+    referer: req.header("referer"),
+    contentLength: req.header("content-length"),
+  };
+}
+
+function authFailureReason(req: Request): "missing_bearer_token" | "invalid_bearer_token" {
+  return req.header("authorization") ? "invalid_bearer_token" : "missing_bearer_token";
 }
 
 function contentText(content: ToolContent[]): string {
@@ -1030,6 +1051,33 @@ export function createServer(config = loadConfig()): RunningServer {
   const workspaces = new WorkspaceRegistry(config, workspaceStore);
   const autoCommit = createAutoCommitManager({ config: config.autocommit });
 
+  if (config.logging.trustProxy) {
+    app.set("trust proxy", true);
+  }
+
+  app.use((req, res, next) => {
+    const requestId = randomUUID();
+    const startedAt = performance.now();
+    res.locals.requestId = requestId;
+
+    res.on("finish", () => {
+      const path = requestPath(req);
+      if (!config.logging.requests) return;
+      if (!config.logging.assets && path.startsWith("/mcp-app-assets")) return;
+
+      logEvent(config.logging, "info", "http_request", {
+        requestId,
+        method: req.method,
+        path,
+        status: res.statusCode,
+        durationMs: Math.round(performance.now() - startedAt),
+        ...requestLogFields(req, config),
+      });
+    });
+
+    next();
+  });
+
   app.options("/mcp-app-assets/{*asset}", (_req, res) => {
     setAssetHeaders(res);
     res.sendStatus(204);
@@ -1050,13 +1098,31 @@ export function createServer(config = loadConfig()): RunningServer {
   });
 
   app.all("/mcp", async (req, res) => {
+    const requestId = res.locals.requestId as string | undefined;
+    const sessionId = req.header("mcp-session-id");
+    const initializeRequest = req.method === "POST" && isInitializeRequest(req.body);
+
     if (!isAuthorized(req, config)) {
+      logEvent(config.logging, "warn", "auth_denied", {
+        requestId,
+        method: req.method,
+        path: requestPath(req),
+        reason: authFailureReason(req),
+        ...requestLogFields(req, config),
+      });
       sendJsonRpcError(res, 401, -32001, "Unauthorized");
       return;
     }
 
+    logEvent(config.logging, "debug", "mcp_request", {
+      requestId,
+      method: req.method,
+      sessionIdPresent: Boolean(sessionId),
+      sessionIdPrefix: sessionIdPrefix(sessionId),
+      isInitialize: initializeRequest,
+    });
+
     try {
-      const sessionId = req.header("mcp-session-id");
       let transport: Transport | undefined;
 
       if (sessionId) {
@@ -1065,17 +1131,27 @@ export function createServer(config = loadConfig()): RunningServer {
           sendJsonRpcError(res, 404, -32000, "Unknown MCP session");
           return;
         }
-      } else if (req.method === "POST" && isInitializeRequest(req.body)) {
+      } else if (initializeRequest) {
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (newSessionId) => {
             if (transport) transports.set(newSessionId, transport);
+            logEvent(config.logging, "info", "mcp_session_created", {
+              requestId,
+              sessionIdPrefix: sessionIdPrefix(newSessionId),
+              ...requestLogFields(req, config),
+            });
           },
         });
 
         transport.onclose = () => {
           const closedSessionId = transport?.sessionId;
-          if (closedSessionId) transports.delete(closedSessionId);
+          if (closedSessionId) {
+            transports.delete(closedSessionId);
+            logEvent(config.logging, "info", "mcp_session_closed", {
+              sessionIdPrefix: sessionIdPrefix(closedSessionId),
+            });
+          }
         };
 
         const server = createMcpServer(config, workspaces, autoCommit);
@@ -1087,7 +1163,10 @@ export function createServer(config = loadConfig()): RunningServer {
 
       await transport.handleRequest(req, res, req.body);
     } catch (error) {
-      console.error("Error handling MCP request", error);
+      logEvent(config.logging, "error", "mcp_request_error", {
+        requestId,
+        error: error instanceof Error ? error.message : String(error),
+      });
       if (!res.headersSent) {
         sendJsonRpcError(res, 500, -32603, "Internal server error");
       }
@@ -1115,5 +1194,9 @@ if (await isMainModule()) {
     console.log(
       config.authToken ? "auth: bearer token required" : "auth: disabled",
     );
+    console.log(`logging: ${config.logging.level} ${config.logging.format}`);
+    console.log(`request logging: ${config.logging.requests ? "enabled" : "disabled"}`);
+    console.log(`asset logging: ${config.logging.assets ? "enabled" : "disabled"}`);
+    console.log(`trust proxy: ${config.logging.trustProxy ? "enabled" : "disabled"}`);
   });
 }
