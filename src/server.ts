@@ -709,7 +709,7 @@ function createMcpServer(
           patch: response.details?.patch,
         },
       });
-      const editResultText = `Edited ${input.path} (+${stats.additions} -${stats.removals}). Diff available in the UI as ${storedResult.id}.`;
+      const editResultText = `Edited ${input.path} (+${stats.additions} -${stats.removals}).`;
       const editContent = [
         textBlock(editResultText),
         ...(agentsNotice ? [textBlock(agentsNotice)] : []),
