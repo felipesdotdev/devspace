@@ -141,6 +141,9 @@ DEVSPACE_WIDGETS="changes" \
 npm run dev
 ```
 
+If you keep a local `.env` file, `npm run start` now loads it automatically and
+can start a Cloudflare Tunnel sidecar when `.cloudflared/devspace.yml` exists.
+
 ## Release Builds
 
 Use release builds for long-running MCP server processes:
@@ -204,8 +207,12 @@ http://127.0.0.1:7676
 Then configure the remote MCP client with:
 
 ```text
-https://your-tunnel-hostname.example.com/mcp
+https://devspace.felipes.dev/mcp
 ```
+
+The recommended hostname for this setup is `devspace.felipes.dev`. It is
+specific enough to describe the service and short enough to use consistently in
+ChatGPT and browser bookmarks.
 
 ## Security Notes
 

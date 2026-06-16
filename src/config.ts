@@ -63,6 +63,17 @@ function parseBoolean(value: string | undefined): boolean {
   return ["1", "true", "yes", "on"].includes(value?.toLowerCase() ?? "");
 }
 
+function parseTrustProxy(value: string | undefined): boolean | number {
+  if (!value) return false;
+  if (value === "1") return 1;
+  if (["true", "yes", "on"].includes(value.toLowerCase())) return true;
+
+  const parsed = Number(value);
+  if (Number.isInteger(parsed) && parsed >= 1) return parsed;
+
+  return false;
+}
+
 function parseMinimalTools(env: NodeJS.ProcessEnv): boolean {
   return env.DEVSPACE_TOOL_MODE === "minimal" || parseBoolean(env.DEVSPACE_MINIMAL_TOOLS);
 }
@@ -126,7 +137,7 @@ function parseLoggingConfig(env: NodeJS.ProcessEnv): LoggingConfig {
     assets: parseBoolean(env.DEVSPACE_LOG_ASSETS),
     toolCalls: env.DEVSPACE_LOG_TOOL_CALLS === undefined ? true : parseBoolean(env.DEVSPACE_LOG_TOOL_CALLS),
     shellCommands: parseBoolean(env.DEVSPACE_LOG_SHELL_COMMANDS),
-    trustProxy: parseBoolean(env.DEVSPACE_TRUST_PROXY),
+    trustProxy: parseTrustProxy(env.DEVSPACE_TRUST_PROXY),
   };
 }
 

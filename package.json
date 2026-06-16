@@ -8,9 +8,11 @@
     "build": "npm run build:app && tsc -p tsconfig.build.json",
     "build:app": "vite build",
     "dev": "tsx watch src/server.ts",
-    "start": "node dist/server.js",
+    "prestart": "npm run build",
+    "start": "node --env-file=.env scripts/launch.mjs",
     "release:build": "node scripts/build-release.mjs",
     "release:start": "node scripts/ensure-native-deps.mjs && node releases/current/dist/server.js",
+    "launch": "node --env-file=.env scripts/launch.mjs",
     "test": "tsx src/config.test.ts && tsx src/roots.test.ts && tsx src/skills.test.ts && tsx src/workspaces.test.ts && tsx src/review-checkpoints.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
