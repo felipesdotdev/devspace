@@ -25,7 +25,11 @@ export function loadWorkspaceSkills(config: ServerConfig, cwd: string): LoadedSk
   return loadSkills({
     cwd,
     agentDir: config.agentDir,
-    skillPaths: config.skillPaths,
+    skillPaths: Array.from(new Set([
+      resolve(cwd, ".agents", "skills"),
+      resolve(cwd, ".pi", "skills"),
+      ...config.skillPaths,
+    ])),
     includeDefaults: true,
   });
 }

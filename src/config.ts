@@ -38,6 +38,14 @@ function parsePort(value: string | undefined): number {
   return port;
 }
 
+function defaultAllowedRoots(): string[] {
+  if (process.platform === "win32") {
+    return ["C:\\", "D:\\", "E:\\", "F:\\"];
+  }
+
+  return ["/"];
+}
+
 function parseAllowedRoots(value: string | undefined): string[] {
   const rawRoots =
     value
@@ -45,7 +53,11 @@ function parseAllowedRoots(value: string | undefined): string[] {
       .map((entry) => entry.trim())
       .filter(Boolean) ?? [];
 
-  const roots = rawRoots.length > 0 ? rawRoots : [process.cwd()];
+  if (rawRoots.includes("*") || rawRoots.includes("all")) {
+    return defaultAllowedRoots().map((root) => resolve(expandHomePath(root)));
+  }
+
+  const roots = rawRoots.length > 0 ? rawRoots : defaultAllowedRoots();
   return roots.map((root) => resolve(expandHomePath(root)));
 }
 
@@ -206,7 +218,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     widgets: parseWidgetMode(env.DEVSPACE_WIDGETS),
     stateDir: resolve(env.DEVSPACE_STATE_DIR ?? defaultStateDir()),
     worktreeRoot: resolve(expandHomePath(env.DEVSPACE_WORKTREE_ROOT ?? defaultWorktreeRoot())),
-    skillsEnabled: parseBoolean(env.DEVSPACE_SKILLS),
+    skillsEnabled: env.DEVSPACE_SKILLS === undefined ? true : parseBoolean(env.DEVSPACE_SKILLS),
     skillPaths: parsePathList(env.DEVSPACE_SKILL_PATHS),
     agentDir: resolve(expandHomePath(env.DEVSPACE_AGENT_DIR ?? defaultAgentDir())),
     logging: parseLoggingConfig(env),
