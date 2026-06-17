@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
-import type { WorkspaceMode, WorkspaceStore } from "./workspace-store.js";
+import type { WorkspaceBackendKind, WorkspaceMode, WorkspaceStore } from "./workspace-store.js";
 import { mkdir, opendir, stat } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { loadProjectContextFiles } from "@earendil-works/pi-coding-agent";
 import type { ServerConfig } from "./config.js";
 import { createManagedWorktree } from "./git-worktrees.js";
 import { assertAllowedPath, isPathInsideRoot, resolveAllowedPath } from "./roots.js";
+import { createAdHocSshConnection, isSshTarget } from "./connections.js";
+import { openSshWorkspace } from "./ssh-tools.js";
 import {
   loadWorkspaceSkills,
   markSkillActivated,
@@ -38,6 +40,8 @@ export interface Workspace {
   mode: WorkspaceMode;
   sourceRoot?: string;
   worktree?: WorkspaceWorktree;
+  backendKind: WorkspaceBackendKind;
+  connectionId?: string;
   skills: LoadedSkills["skills"];
   skillDiagnostics: LoadedSkills["diagnostics"];
   activatedSkillDirs: Set<string>;
@@ -59,6 +63,8 @@ export interface OpenWorkspaceInput {
   path: string;
   mode?: WorkspaceMode;
   baseRef?: string;
+  connection?: string;
+  sshTarget?: string;
 }
 
 export class WorkspaceRegistry {
@@ -72,6 +78,10 @@ export class WorkspaceRegistry {
   async openWorkspace(input: string | OpenWorkspaceInput): Promise<WorkspaceContext> {
     const options = typeof input === "string" ? { path: input } : input;
     const mode = options.mode ?? "checkout";
+
+    if (options.sshTarget || (options.connection && options.connection !== "local")) {
+      return this.openSshWorkspace(options);
+    }
 
     if (mode === "worktree") {
       return this.openWorktreeWorkspace(options.path, options.baseRef);
@@ -92,12 +102,20 @@ export class WorkspaceRegistry {
       throw new Error(`Unknown workspaceId: ${workspaceId}. Call open_workspace first.`);
     }
 
-    const root = this.assertWorkspaceRootAllowed(session.root, session.mode, session.sourceRoot);
+    const root = this.assertWorkspaceRootAllowed(
+      session.root,
+      session.mode,
+      session.sourceRoot,
+      session.backendKind,
+      session.connectionId,
+    );
     const restoredWorkspace: Workspace = {
       id: session.id,
       root,
       mode: session.mode,
       sourceRoot: session.sourceRoot,
+      backendKind: session.backendKind,
+      connectionId: session.connectionId,
       worktree:
         session.mode === "worktree"
           ? {
@@ -109,7 +127,7 @@ export class WorkspaceRegistry {
               managed: session.managed,
             }
           : undefined,
-      ...this.loadSkillsForWorkspace(root),
+      ...(session.backendKind === "ssh" ? { skills: [], skillDiagnostics: [] } : this.loadSkillsForWorkspace(root)),
       activatedSkillDirs: new Set(),
     };
     this.store?.touchSession(workspaceId);
@@ -118,7 +136,22 @@ export class WorkspaceRegistry {
     return restoredWorkspace;
   }
 
+  getSshConnection(workspace: Workspace) {
+    if (workspace.backendKind !== "ssh" || !workspace.connectionId) return undefined;
+    if (workspace.connectionId.startsWith("ssh:")) {
+      return createAdHocSshConnection(workspace.connectionId.slice("ssh:".length), workspace.root);
+    }
+
+    const connection = this.config.sshConnections[workspace.connectionId];
+    if (!connection) throw new Error(`Workspace references unknown SSH connection: ${workspace.connectionId}`);
+    return connection;
+  }
+
   resolvePath(workspace: Workspace, inputPath: string): string {
+    if (workspace.backendKind === "ssh") {
+      return inputPath;
+    }
+
     const absolutePath = resolveAllowedPath(inputPath, workspace.root, [workspace.root]);
     if (!isPathInsideRoot(absolutePath, workspace.root)) {
       throw new Error(`Path is outside workspace root: ${inputPath}`);
@@ -128,6 +161,13 @@ export class WorkspaceRegistry {
   }
 
   resolveReadPath(workspace: Workspace, inputPath: string): WorkspaceReadPath {
+    if (workspace.backendKind === "ssh") {
+      return {
+        absolutePath: inputPath,
+        readRoots: [workspace.root],
+      };
+    }
+
     try {
       return {
         absolutePath: this.resolvePath(workspace, inputPath),
@@ -156,6 +196,10 @@ export class WorkspaceRegistry {
   }
 
   resolveWorkingDirectory(workspace: Workspace, workingDirectory: string | undefined): string {
+    if (workspace.backendKind === "ssh") {
+      return workingDirectory ?? workspace.root;
+    }
+
     const directory = workingDirectory ? this.resolvePath(workspace, workingDirectory) : workspace.root;
     return assertAllowedPath(directory, [workspace.root]);
   }
@@ -170,6 +214,42 @@ export class WorkspaceRegistry {
     }
 
     return this.createWorkspaceContext({ root, mode: "checkout" });
+  }
+
+  private async openSshWorkspace(options: OpenWorkspaceInput): Promise<WorkspaceContext> {
+    const connectionId = options.sshTarget
+      ? `ssh:${options.sshTarget}`
+      : options.connection;
+    if (!connectionId) throw new Error("SSH connection id or sshTarget is required.");
+
+    const connection = options.sshTarget
+      ? createAdHocSshConnection(options.sshTarget, options.path)
+      : this.config.sshConnections[connectionId];
+    if (!connection) {
+      throw new Error(`Unknown SSH connection: ${connectionId}. Configure it in DEVSPACE_CONNECTIONS_FILE or use sshTarget.`);
+    }
+    if (options.connection && options.connection !== "local" && isSshTarget(options.connection)) {
+      throw new Error("Use sshTarget for ad hoc SSH targets such as user@host, not connection.");
+    }
+
+    const remote = await openSshWorkspace(connection, {
+      path: options.path,
+      mode: options.mode,
+      baseRef: options.baseRef,
+    });
+
+    return this.createWorkspaceContext({
+      root: remote.root,
+      mode: remote.mode,
+      sourceRoot: remote.sourceRoot,
+      worktree: remote.worktree,
+      backendKind: "ssh",
+      connectionId,
+      agentsFiles: remote.agentsFiles,
+      availableAgentsFiles: remote.availableAgentsFiles,
+      skills: remote.skills,
+      skillDiagnostics: remote.skillDiagnostics as LoadedSkills["diagnostics"],
+    });
   }
 
   private async openWorktreeWorkspace(path: string, baseRef: string | undefined): Promise<WorkspaceContext> {
@@ -192,14 +272,25 @@ export class WorkspaceRegistry {
     mode: WorkspaceMode;
     sourceRoot?: string;
     worktree?: WorkspaceWorktree;
+    backendKind?: WorkspaceBackendKind;
+    connectionId?: string;
+    agentsFiles?: LoadedAgentsFile[];
+    availableAgentsFiles?: AvailableAgentsFile[];
+    skills?: LoadedSkills["skills"];
+    skillDiagnostics?: LoadedSkills["diagnostics"];
   }): Promise<WorkspaceContext> {
+    const localSkills = input.backendKind === "ssh"
+      ? { skills: input.skills ?? [], skillDiagnostics: input.skillDiagnostics ?? [] }
+      : this.loadSkillsForWorkspace(input.root);
     const workspace: Workspace = {
       id: `ws_${randomUUID()}`,
       root: input.root,
       mode: input.mode,
       sourceRoot: input.sourceRoot,
       worktree: input.worktree,
-      ...this.loadSkillsForWorkspace(input.root),
+      backendKind: input.backendKind ?? "local",
+      connectionId: input.connectionId,
+      ...localSkills,
       activatedSkillDirs: new Set(),
     };
 
@@ -211,10 +302,12 @@ export class WorkspaceRegistry {
       baseRef: workspace.worktree?.baseRef,
       baseSha: workspace.worktree?.baseSha,
       managed: workspace.worktree?.managed,
+      backendKind: workspace.backendKind,
+      connectionId: workspace.connectionId,
     });
     this.workspaces.set(workspace.id, workspace);
-    const agentsFiles = this.loadInitialAgentsFiles(workspace.root);
-    const availableAgentsFiles = await this.findAvailableAgentsFiles(workspace.root, agentsFiles);
+    const agentsFiles = input.agentsFiles ?? this.loadInitialAgentsFiles(workspace.root);
+    const availableAgentsFiles = input.availableAgentsFiles ?? await this.findAvailableAgentsFiles(workspace.root, agentsFiles);
 
     return { workspace, agentsFiles, availableAgentsFiles };
   }
@@ -227,7 +320,25 @@ export class WorkspaceRegistry {
     };
   }
 
-  private assertWorkspaceRootAllowed(root: string, mode: WorkspaceMode, sourceRoot: string | undefined): string {
+  private assertWorkspaceRootAllowed(
+    root: string,
+    mode: WorkspaceMode,
+    sourceRoot: string | undefined,
+    backendKind: WorkspaceBackendKind = "local",
+    connectionId?: string,
+  ): string {
+    if (backendKind === "ssh") {
+      if (!connectionId) throw new Error(`Stored SSH workspace is missing connectionId: ${root}`);
+      const connection = this.config.sshConnections[connectionId];
+      if (!connection) throw new Error(`Stored SSH workspace references unknown connection: ${connectionId}`);
+      if (mode === "worktree") {
+        if (!sourceRoot) throw new Error(`Stored SSH worktree workspace is missing sourceRoot: ${root}`);
+        assertAllowedPath(sourceRoot, connection.allowedRoots);
+        return assertAllowedPath(root, [connection.worktreeRoot]);
+      }
+      return assertAllowedPath(root, connection.allowedRoots);
+    }
+
     if (mode === "worktree") {
       if (!sourceRoot) {
         throw new Error(`Stored worktree workspace is missing sourceRoot: ${root}`);

@@ -1,0 +1,7 @@
+tunnel: 806262a5-9a3e-470d-b69f-02bfcee656d8
+credentials-file: /home/felipesdev/.cloudflared/806262a5-9a3e-470d-b69f-02bfcee656d8.json
+
+ingress:
+  - hostname: devspace.felipes.dev
+    service: http://127.0.0.1:7676
+  - service: http_status:404

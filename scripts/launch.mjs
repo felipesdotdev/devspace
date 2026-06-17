@@ -6,7 +6,11 @@ import { join, resolve } from "node:path";
 const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const tsxCli = join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs");
 const serverEntry = join(repoRoot, "src", "server.ts");
-const cloudflaredConfig = resolve(repoRoot, ".cloudflared", "devspace.yml");
+const cloudflaredConfig = resolve(
+  repoRoot,
+  ".cloudflared",
+  process.platform === "win32" ? "devspace.windows.yml" : "devspace.linux.yml",
+);
 
 function assertExists(path, message) {
   try {

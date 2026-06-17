@@ -6,6 +6,7 @@ import {
 } from "./db/schema.js";
 
 export type WorkspaceMode = "checkout" | "worktree";
+export type WorkspaceBackendKind = "local" | "ssh";
 
 export interface WorkspaceSession {
   id: string;
@@ -16,6 +17,8 @@ export interface WorkspaceSession {
   baseRef?: string;
   baseSha?: string;
   managed: boolean;
+  backendKind: WorkspaceBackendKind;
+  connectionId?: string;
   createdAt: string;
   lastUsedAt: string;
 }
@@ -29,6 +32,8 @@ export interface WorkspaceStore {
     baseRef?: string;
     baseSha?: string;
     managed?: boolean;
+    backendKind?: WorkspaceBackendKind;
+    connectionId?: string;
   }): WorkspaceSession;
   getSession(id: string): WorkspaceSession | undefined;
   touchSession(id: string): void;
@@ -51,6 +56,8 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     baseRef?: string;
     baseSha?: string;
     managed?: boolean;
+    backendKind?: WorkspaceBackendKind;
+    connectionId?: string;
   }): WorkspaceSession {
     const now = new Date().toISOString();
     const session: WorkspaceSession = {
@@ -62,6 +69,8 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       baseRef: input.baseRef,
       baseSha: input.baseSha,
       managed: input.managed ?? false,
+      backendKind: input.backendKind ?? "local",
+      connectionId: input.connectionId,
       createdAt: now,
       lastUsedAt: now,
     };
@@ -77,6 +86,8 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
         baseRef: session.baseRef ?? null,
         baseSha: session.baseSha ?? null,
         managed: String(session.managed),
+        backendKind: session.backendKind,
+        connectionId: session.connectionId ?? null,
         createdAt: session.createdAt,
         lastUsedAt: session.lastUsedAt,
       })
@@ -118,6 +129,8 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
         base_ref text,
         base_sha text,
         managed text not null default 'false',
+        backend_kind text not null default 'local',
+        connection_id text,
         created_at text not null,
         last_used_at text not null
       );
@@ -150,6 +163,8 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     this.addColumnIfMissing("workspace_sessions", "base_ref", "text");
     this.addColumnIfMissing("workspace_sessions", "base_sha", "text");
     this.addColumnIfMissing("workspace_sessions", "managed", "text not null default 'false'");
+    this.addColumnIfMissing("workspace_sessions", "backend_kind", "text not null default 'local'");
+    this.addColumnIfMissing("workspace_sessions", "connection_id", "text");
   }
 
   private addColumnIfMissing(table: string, column: string, definition: string): void {
@@ -176,6 +191,8 @@ function rowToWorkspaceSession(row: WorkspaceSessionRow): WorkspaceSession {
     baseRef: row.baseRef ?? undefined,
     baseSha: row.baseSha ?? undefined,
     managed: row.managed === "true",
+    backendKind: row.backendKind === "ssh" ? "ssh" : "local",
+    connectionId: row.connectionId ?? undefined,
     createdAt: row.createdAt,
     lastUsedAt: row.lastUsedAt,
   };

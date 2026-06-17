@@ -247,6 +247,27 @@ class FileOAuthClientsStore implements OAuthRegisteredClientsStore {
     return registered;
   }
 
+  upsertRedirectUri(clientId: string, redirectUri: string): OAuthClientInformationFull | undefined {
+    if (!redirectHostAllowed(redirectUri, this.allowedRedirectHosts)) {
+      return undefined;
+    }
+
+    const existing = this.clients.get(clientId);
+    if (!existing) return undefined;
+
+    if (existing.redirect_uris.includes(redirectUri)) {
+      return existing;
+    }
+
+    const updated = {
+      ...existing,
+      redirect_uris: [...existing.redirect_uris, redirectUri],
+    };
+    this.clients.set(clientId, updated);
+    this.persist();
+    return updated;
+  }
+
   private load(): void {
     try {
       const raw = readFileSync(this.filePath, "utf8");
@@ -302,6 +323,13 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     this.persistence = new OAuthPersistence(join(stateDir, "oauth-state.json"), config.allowedRedirectHosts);
     this.clientsStore = this.persistence.clientsStore;
     this.loadPersistedTokens();
+  }
+
+  rememberRedirectUri(clientId: string, redirectUri: string): boolean {
+    if (this.clientsStore instanceof FileOAuthClientsStore) {
+      return Boolean(this.clientsStore.upsertRedirectUri(clientId, redirectUri));
+    }
+    return false;
   }
 
   async authorize(

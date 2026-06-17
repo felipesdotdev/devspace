@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { loadSshConnections, type SshConnectionConfig } from "./connections.js";
 import { expandHomePath } from "./roots.js";
 import type { LoggingConfig, LogFormat, LogLevel } from "./logger.js";
 import type { OAuthConfig } from "./oauth-provider.js";
@@ -25,6 +26,7 @@ export interface ServerConfig {
   skillPaths: string[];
   agentDir: string;
   logging: LoggingConfig;
+  sshConnections: Record<string, SshConnectionConfig>;
 }
 
 function parsePort(value: string | undefined): number {
@@ -222,5 +224,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     skillPaths: parsePathList(env.DEVSPACE_SKILL_PATHS),
     agentDir: resolve(expandHomePath(env.DEVSPACE_AGENT_DIR ?? defaultAgentDir())),
     logging: parseLoggingConfig(env),
+    sshConnections: loadSshConnections(env.DEVSPACE_CONNECTIONS_FILE),
   };
 }

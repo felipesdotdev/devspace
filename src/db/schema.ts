@@ -11,6 +11,8 @@ export const workspaceSessions = sqliteTable(
     baseRef: text("base_ref"),
     baseSha: text("base_sha"),
     managed: text("managed").notNull().default("false"),
+    backendKind: text("backend_kind").notNull().default("local"),
+    connectionId: text("connection_id"),
     createdAt: text("created_at").notNull(),
     lastUsedAt: text("last_used_at").notNull(),
   },

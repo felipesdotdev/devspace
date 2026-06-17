@@ -34,6 +34,16 @@ import {
   runShellTool,
   writeFileTool,
 } from "./pi-tools.js";
+import {
+  editSshFileTool,
+  findSshFilesTool,
+  grepSshFilesTool,
+  listSshDirectoryTool,
+  readSshFileTool,
+  reviewSshChanges,
+  runSshShellTool,
+  writeSshFileTool,
+} from "./ssh-tools.js";
 import { SingleUserOAuthProvider } from "./oauth-provider.js";
 import { createReviewCheckpointManager } from "./review-checkpoints.js";
 import { formatPathForPrompt } from "./skills.js";
@@ -456,6 +466,12 @@ function createMcpServer(
   workspaces: WorkspaceRegistry,
   reviewCheckpoints: ReturnType<typeof createReviewCheckpointManager>,
 ): McpServer {
+  function sshConnectionFor(workspaceId: string) {
+    const workspace = workspaces.getWorkspace(workspaceId);
+    const connection = workspaces.getSshConnection(workspace);
+    return { workspace, connection };
+  }
+
   const toolNames = toolNamesFor(config);
   const server = new McpServer(
     {
@@ -524,6 +540,14 @@ function createMcpServer(
           .string()
           .optional()
           .describe("Git ref to base a worktree on. Only used with mode=\"worktree\". Defaults to HEAD."),
+        connection: z
+          .string()
+          .optional()
+          .describe("Optional configured connection id. Omit or use \"local\" for the local machine; use a configured SSH connection id for a remote workspace."),
+        sshTarget: z
+          .string()
+          .optional()
+          .describe("Optional ad hoc SSH target such as user@host or ssh://user@host. Uses the local OpenSSH configuration, ssh-agent, and known_hosts; do not pass passwords here."),
       },
       outputSchema: {
         workspaceId: z.string(),
@@ -549,10 +573,10 @@ function createMcpServer(
       ...toolWidgetDescriptorMeta(config, "workspace"),
       annotations: { readOnlyHint: true },
     },
-    async ({ path, mode, baseRef }) => {
+    async ({ path, mode, baseRef, connection, sshTarget }) => {
       const startedAt = performance.now();
-      const { workspace, agentsFiles, availableAgentsFiles } = await workspaces.openWorkspace({ path, mode, baseRef });
-      if (config.widgets === "changes") {
+      const { workspace, agentsFiles, availableAgentsFiles } = await workspaces.openWorkspace({ path, mode, baseRef, connection, sshTarget });
+      if (config.widgets === "changes" && workspace.backendKind !== "ssh") {
         void reviewCheckpoints.initializeWorkspace({
           workspaceId: workspace.id,
           root: workspace.root,
@@ -680,9 +704,11 @@ function createMcpServer(
     },
     async ({ workspaceId, ...input }) => {
       const startedAt = performance.now();
-      const workspace = workspaces.getWorkspace(workspaceId);
+      const { workspace, connection } = sshConnectionFor(workspaceId);
       const readPath = workspaces.resolveReadPath(workspace, input.path);
-      const response = await readFileTool(
+      const response = connection
+        ? await readSshFileTool(connection, { cwd: workspace.root, root: workspace.root }, { ...input, path: readPath.absolutePath })
+        : await readFileTool(
         { ...input, path: readPath.absolutePath },
         {
           cwd: workspace.root,
@@ -754,9 +780,11 @@ function createMcpServer(
     },
     async ({ workspaceId, ...input }) => {
       const startedAt = performance.now();
-      const workspace = workspaces.getWorkspace(workspaceId);
+      const { workspace, connection } = sshConnectionFor(workspaceId);
       workspaces.resolvePath(workspace, input.path);
-      const response = await writeFileTool(input, {
+      const response = connection
+        ? await writeSshFileTool(connection, { cwd: workspace.root, root: workspace.root }, input)
+        : await writeFileTool(input, {
         cwd: workspace.root,
         root: workspace.root,
       });
@@ -841,9 +869,11 @@ function createMcpServer(
     },
     async ({ workspaceId, ...input }) => {
       const startedAt = performance.now();
-      const workspace = workspaces.getWorkspace(workspaceId);
+      const { workspace, connection } = sshConnectionFor(workspaceId);
       workspaces.resolvePath(workspace, input.path);
-      const response = await editFileTool(input, {
+      const response = connection
+        ? await editSshFileTool(connection, { cwd: workspace.root, root: workspace.root }, input)
+        : await editFileTool(input, {
         cwd: workspace.root,
         root: workspace.root,
       });
@@ -923,13 +953,15 @@ function createMcpServer(
       },
       async ({ workspaceId, since, markReviewed }) => {
         const startedAt = performance.now();
-        const workspace = workspaces.getWorkspace(workspaceId);
-        const review = await reviewCheckpoints.reviewChanges({
-          workspaceId,
-          root: workspace.root,
-          since: since ?? "last_review",
-          markReviewed: markReviewed ?? true,
-        });
+        const { workspace, connection } = sshConnectionFor(workspaceId);
+        const review = connection
+          ? await reviewSshChanges(connection, { root: workspace.root })
+          : await reviewCheckpoints.reviewChanges({
+              workspaceId,
+              root: workspace.root,
+              since: since ?? "last_review",
+              markReviewed: markReviewed ?? true,
+            });
 
         const content = [textBlock(review.result)];
         logToolCall(config, {
@@ -987,9 +1019,11 @@ function createMcpServer(
       },
       async ({ workspaceId, ...input }) => {
         const startedAt = performance.now();
-        const workspace = workspaces.getWorkspace(workspaceId);
+        const { workspace, connection } = sshConnectionFor(workspaceId);
         if (input.path) workspaces.resolvePath(workspace, input.path);
-        const response = await grepFilesTool(input, {
+        const response = connection
+          ? await grepSshFilesTool(connection, { cwd: workspace.root, root: workspace.root }, input)
+          : await grepFilesTool(input, {
           cwd: workspace.root,
           root: workspace.root,
         });
@@ -1057,9 +1091,11 @@ function createMcpServer(
       },
       async ({ workspaceId, ...input }) => {
         const startedAt = performance.now();
-        const workspace = workspaces.getWorkspace(workspaceId);
+        const { workspace, connection } = sshConnectionFor(workspaceId);
         if (input.path) workspaces.resolvePath(workspace, input.path);
-        const response = await findFilesTool(input, {
+        const response = connection
+          ? await findSshFilesTool(connection, { cwd: workspace.root, root: workspace.root }, input)
+          : await findFilesTool(input, {
           cwd: workspace.root,
           root: workspace.root,
         });
@@ -1127,9 +1163,11 @@ function createMcpServer(
       },
       async ({ workspaceId, ...input }) => {
         const startedAt = performance.now();
-        const workspace = workspaces.getWorkspace(workspaceId);
+        const { workspace, connection } = sshConnectionFor(workspaceId);
         workspaces.resolvePath(workspace, input.path);
-        const response = await listDirectoryTool(input, {
+        const response = connection
+          ? await listSshDirectoryTool(connection, { cwd: workspace.root, root: workspace.root }, input)
+          : await listDirectoryTool(input, {
           cwd: workspace.root,
           root: workspace.root,
         });
@@ -1207,12 +1245,14 @@ function createMcpServer(
     },
     async ({ workspaceId, workingDirectory, ...input }) => {
       const startedAt = performance.now();
-      const workspace = workspaces.getWorkspace(workspaceId);
+      const { workspace, connection } = sshConnectionFor(workspaceId);
       const cwd = workspaces.resolveWorkingDirectory(
         workspace,
         workingDirectory,
       );
-      const response = await runShellTool(input, {
+      const response = connection
+        ? await runSshShellTool(connection, { cwd, root: workspace.root }, input)
+        : await runShellTool(input, {
         cwd,
         root: workspace.root,
       });
@@ -1285,6 +1325,24 @@ export function createServer(config = loadConfig()): RunningServer {
   if (config.logging.trustProxy) {
     app.set("trust proxy", config.logging.trustProxy);
   }
+
+  app.use((req, _res, next) => {
+    if (req.path !== "/authorize") {
+      next();
+      return;
+    }
+
+    const rawClientId = req.method === "POST" ? req.body?.client_id : req.query?.client_id;
+    const rawRedirectUri = req.method === "POST" ? req.body?.redirect_uri : req.query?.redirect_uri;
+    const clientId = typeof rawClientId === "string" ? rawClientId : undefined;
+    const redirectUri = typeof rawRedirectUri === "string" ? rawRedirectUri : undefined;
+
+    if (clientId && redirectUri) {
+      oauthProvider.rememberRedirectUri(clientId, redirectUri);
+    }
+
+    next();
+  });
 
   app.use((req, res, next) => {
     const requestId = randomUUID();
