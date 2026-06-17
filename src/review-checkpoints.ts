@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git, getGitEligibility, safeWorkspaceRefSegment } from "./git.js";
 
-export type ReviewSince = "last_review" | "workspace_open";
+export type ReviewSince = "last_review" | "last_shown" | "workspace_open";
 
 export interface ReviewSummary {
   files: number;
@@ -71,7 +71,7 @@ export function createReviewCheckpointManager(): ReviewCheckpointManager {
       }
     },
 
-    async reviewChanges({ workspaceId, root, since = "last_review", markReviewed = true }) {
+    async reviewChanges({ workspaceId, root, since = "last_shown", markReviewed = true }) {
       let state = states.get(workspaceId);
       if (!state) {
         await this.initializeWorkspace({ workspaceId, root });
@@ -101,7 +101,7 @@ export function createReviewCheckpointManager(): ReviewCheckpointManager {
       return {
         result:
           summary.files === 0
-            ? `No changes since ${since === "workspace_open" ? "workspace open" : "last review"}.`
+            ? `No changes since ${since === "workspace_open" ? "workspace open" : "last shown"}.`
             : `Changed ${summary.files} ${summary.files === 1 ? "file" : "files"} (+${summary.additions} -${summary.removals}).`,
         summary,
         files,

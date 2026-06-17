@@ -102,6 +102,7 @@ type ToolWidgetKind =
   | "search"
   | "directory"
   | "shell"
+  | "show_changes"
   | "review_changes";
 
 interface ToolDefinitionMeta extends Record<string, unknown> {
@@ -124,7 +125,7 @@ function shouldAttachWidget(mode: WidgetMode, kind: ToolWidgetKind): boolean {
     case "off":
       return false;
     case "changes":
-      return kind === "workspace" || kind === "review_changes";
+      return kind === "workspace" || kind === "show_changes" || kind === "review_changes";
     case "full":
       return true;
   }
@@ -206,10 +207,10 @@ function serverInstructions(config: ServerConfig, toolNames: ToolNames): string 
 
   const review =
     config.widgets === "changes"
-      ? " After completing a coherent set of file modifications, call review_changes once to show the user an aggregate diff review."
+      ? " After completing a coherent set of file modifications, call show_changes once to show the user an aggregate diff review."
       : "";
 
-  return `Use DevSpace as a local coding workspace. Call ${toolNames.openWorkspace} once per project folder or worktree to obtain a workspaceId. Reuse that same workspaceId for all later file, search, edit, write, review, and shell tools in that folder; do not call ${toolNames.openWorkspace} again unless switching folders/worktrees, changing checkout/worktree mode, the workspaceId is rejected as unknown, or the user explicitly asks to reopen. ${agentsMd}${skills}${inspection}Prefer ${toolNames.edit} for targeted modifications, ${toolNames.write} only for new files or complete rewrites, and ${toolNames.shell} for tests, builds, git inspection, package scripts, and commands that are better executed by the shell. Do not create or modify files with ${toolNames.shell}; avoid shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or any command whose purpose is to write project files.${review}`;
+  return `Use DevSpace as a local coding workspace. Call ${toolNames.openWorkspace} once per project folder or worktree to obtain a workspaceId. Reuse that same workspaceId for all later file, search, edit, write, show-changes, review, and shell tools in that folder; do not call ${toolNames.openWorkspace} again unless switching folders/worktrees, changing checkout/worktree mode, the workspaceId is rejected as unknown, or the user explicitly asks to reopen. ${agentsMd}${skills}${inspection}Prefer ${toolNames.edit} for targeted modifications and ${toolNames.write} for new files or complete rewrites. Use ${toolNames.shell} for tests, builds, git inspection, package scripts, commands that are better executed by the shell, and user-requested project maintenance tasks.${review}`;
 }
 function resultOutputSchema(extra: z.ZodRawShape = {}): z.ZodRawShape {
   return {
@@ -927,69 +928,75 @@ function createMcpServer(
   );
 
   if (config.widgets === "changes") {
-    registerAppTool(
-      server,
-      "review_changes",
-      {
-        title: "Review changes",
-        description:
-          "Review aggregate file changes in an open workspace since the last review checkpoint or since the workspace was opened. Use this after a coherent set of file modifications to show a single diff review card.",
-        inputSchema: {
-          workspaceId: z
-            .string()
-            .describe("Workspace identifier returned by open_workspace."),
-          since: z
-            .enum(["last_review", "workspace_open"])
-            .optional()
-            .describe("Defaults to last_review. Use workspace_open to compare against the initial open_workspace checkpoint."),
-          markReviewed: z
-            .boolean()
-            .optional()
-            .describe("Defaults to true. When true, advances the last_review checkpoint to the current workspace state."),
+    const registerChangesTool = (name: "show_changes" | "review_changes", legacy: boolean) => {
+      registerAppTool(
+        server,
+        name,
+        {
+          title: legacy ? "Review changes" : "Show changes",
+          description: legacy
+            ? "Legacy alias for show_changes. Review aggregate file changes in an open workspace since the last review checkpoint or since the workspace was opened."
+            : "Show aggregate file changes in an open workspace since the last shown checkpoint or since the workspace was opened. After you create, edit, or overwrite files, call this once when the related file changes are complete so the user can inspect the combined diff.",
+          inputSchema: {
+            workspaceId: z
+              .string()
+              .describe("Workspace identifier returned by open_workspace."),
+            since: z
+              .enum(legacy ? ["last_review", "workspace_open"] : ["last_shown", "workspace_open"])
+              .optional()
+              .describe(legacy ? "Defaults to last_review. Use workspace_open to compare against the initial open_workspace checkpoint." : "Defaults to last_shown. Use workspace_open to compare against the initial open_workspace checkpoint."),
+            markReviewed: z
+              .boolean()
+              .optional()
+              .describe("Defaults to true. When true, advances the last shown checkpoint to the current workspace state."),
+          },
+          outputSchema: resultOutputSchema(),
+          ...toolWidgetDescriptorMeta(config, name),
+          annotations: { readOnlyHint: true },
         },
-        outputSchema: resultOutputSchema(),
-        ...toolWidgetDescriptorMeta(config, "review_changes"),
-        annotations: { readOnlyHint: true },
-      },
-      async ({ workspaceId, since, markReviewed }) => {
-        const startedAt = performance.now();
-        const { workspace, connection } = sshConnectionFor(workspaceId);
-        const review = connection
-          ? await reviewSshChanges(connection, { root: workspace.root })
-          : await reviewCheckpoints.reviewChanges({
-              workspaceId,
-              root: workspace.root,
-              since: since ?? "last_review",
-              markReviewed: markReviewed ?? true,
-            });
+        async ({ workspaceId, since, markReviewed }) => {
+          const startedAt = performance.now();
+          const { workspace, connection } = sshConnectionFor(workspaceId);
+          const review = connection
+            ? await reviewSshChanges(connection, { root: workspace.root })
+            : await reviewCheckpoints.reviewChanges({
+                workspaceId,
+                root: workspace.root,
+                since: since ?? (legacy ? "last_review" : "last_shown"),
+                markReviewed: markReviewed ?? true,
+              });
 
-        const content = [textBlock(review.result)];
-        logToolCall(config, {
-          tool: "review_changes",
-          workspaceId,
-          success: true,
-          durationMs: Math.round(performance.now() - startedAt),
-        });
+          const content = [textBlock(review.result)];
+          logToolCall(config, {
+            tool: name,
+            workspaceId,
+            success: true,
+            durationMs: Math.round(performance.now() - startedAt),
+          });
 
-        return {
-          content,
-          _meta: {
-            tool: "review_changes",
-            card: {
-              workspaceId,
-              summary: review.summary,
-              files: review.files,
-              payload: {
-                patch: review.patch,
+          return {
+            content,
+            _meta: {
+              tool: name,
+              card: {
+                workspaceId,
+                summary: review.summary,
+                files: review.files,
+                payload: {
+                  patch: review.patch,
+                },
               },
             },
-          },
-          structuredContent: {
-            result: contentText(content),
-          },
-        };
-      },
-    );
+            structuredContent: {
+              result: contentText(content),
+            },
+          };
+        },
+      );
+    };
+
+    registerChangesTool("show_changes", false);
+    registerChangesTool("review_changes", true);
   }
 
   if (!config.minimalTools) {
@@ -1215,8 +1222,8 @@ function createMcpServer(
     {
       title: config.toolNaming === "short" ? "Bash" : "Run shell",
       description: config.minimalTools
-        ? `Run a shell command inside an open workspace. Use only for tests, builds, git inspection, package scripts, search, file discovery, and directory inspection. In minimal tool mode, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} are disabled; use command-line tools such as grep, rg, find, ls, and tree for those read-only inspection actions. Do not use ${toolNames.shell} to create or modify files. Do not use shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or generated scripts to write project files; use ${toolNames.edit} for targeted changes and ${toolNames.write} for new files or full rewrites. Prefer ${toolNames.read} for direct file reads. Call open_workspace first and pass workspaceId. This is powerful local execution and should only be exposed behind strong authentication.`
-        : `Run a shell command inside an open workspace. Use only for tests, builds, git inspection, package scripts, and commands that are better executed by the shell. Do not use ${toolNames.shell} to create or modify files. Do not use shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or generated scripts to write project files; use ${toolNames.edit} for targeted changes and ${toolNames.write} for new files or full rewrites. Prefer ${toolNames.read}, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} for file inspection. Call open_workspace first and pass workspaceId. This is powerful local execution and should only be exposed behind strong authentication.`,
+        ? `Run a shell command inside an open workspace. Use it for tests, builds, git inspection, package scripts, search, file discovery, directory inspection, and user-requested project maintenance tasks. In minimal tool mode, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} are disabled; use command-line tools such as grep, rg, find, ls, and tree for inspection actions. Prefer ${toolNames.edit} for targeted text edits, ${toolNames.write} for new files or full rewrites, and ${toolNames.read} for direct file reads. Call open_workspace first and pass workspaceId. This is powerful local execution and should only be exposed behind strong authentication.`
+        : `Run a shell command inside an open workspace. Use it for tests, builds, git inspection, package scripts, commands that are better executed by the shell, and user-requested project maintenance tasks. Prefer ${toolNames.edit} for targeted text edits, ${toolNames.write} for new files or full rewrites, and ${toolNames.read}, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} for file inspection. Call open_workspace first and pass workspaceId. This is powerful local execution and should only be exposed behind strong authentication.`, 
       inputSchema: {
         workspaceId: z
           .string()
@@ -1224,7 +1231,7 @@ function createMcpServer(
         command: z
           .string()
           .describe(
-            `Shell command to run. Must not create or modify project files; use ${toolNames.edit} or ${toolNames.write} for file changes.`,
+            `Shell command to run inside the open workspace. Use direct file tools for simple edits when they are clearer, and use shell commands for tests, builds, git inspection, package scripts, and user-requested project maintenance.`, 
           ),
         workingDirectory: z
           .string()
@@ -1305,9 +1312,12 @@ function createMcpServer(
 }
 
 export function createServer(config = loadConfig()): RunningServer {
+  const allowedHosts = config.allowedHosts.includes("*")
+    ? undefined
+    : Array.from(new Set([config.host, ...config.allowedHosts]));
   const app = createMcpExpressApp({
     host: config.host,
-    allowedHosts: Array.from(new Set([config.host, ...config.allowedHosts])),
+    ...(allowedHosts ? { allowedHosts } : {}),
   });
   const transports = new Map<string, Transport>();
   const mcpUrl = new URL("/mcp", config.publicBaseUrl);

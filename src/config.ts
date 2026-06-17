@@ -4,6 +4,7 @@ import { loadSshConnections, type SshConnectionConfig } from "./connections.js";
 import { expandHomePath } from "./roots.js";
 import type { LoggingConfig, LogFormat, LogLevel } from "./logger.js";
 import type { OAuthConfig } from "./oauth-provider.js";
+import { loadDevspaceFiles } from "./user-config.js";
 
 export type ToolNamingMode = "legacy" | "short";
 export type WidgetMode = "off" | "changes" | "full";
@@ -29,8 +30,8 @@ export interface ServerConfig {
   sshConnections: Record<string, SshConnectionConfig>;
 }
 
-function parsePort(value: string | undefined): number {
-  if (!value) return 7676;
+function parsePort(value: string | number | undefined): number {
+  if (value === undefined || value === "") return 7676;
 
   const port = Number(value);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
@@ -40,15 +41,12 @@ function parsePort(value: string | undefined): number {
   return port;
 }
 
-function defaultAllowedRoots(): string[] {
-  if (process.platform === "win32") {
-    return ["C:\\", "D:\\", "E:\\", "F:\\"];
+function parseAllowedRoots(value: string | string[] | undefined): string[] {
+  if (Array.isArray(value)) {
+    const roots = value.map((entry) => entry.trim()).filter(Boolean);
+    return (roots.length > 0 ? roots : [process.cwd()]).map((root) => resolve(expandHomePath(root)));
   }
 
-  return ["/"];
-}
-
-function parseAllowedRoots(value: string | undefined): string[] {
   const rawRoots =
     value
       ?.split(",")
@@ -59,18 +57,36 @@ function parseAllowedRoots(value: string | undefined): string[] {
     return defaultAllowedRoots().map((root) => resolve(expandHomePath(root)));
   }
 
-  const roots = rawRoots.length > 0 ? rawRoots : defaultAllowedRoots();
+  const roots = rawRoots.length > 0 ? rawRoots : [process.cwd()];
   return roots.map((root) => resolve(expandHomePath(root)));
 }
 
-function parseAllowedHosts(value: string | undefined): string[] {
+function defaultAllowedRoots(): string[] {
+  if (process.platform === "win32") {
+    return ["C:\\", "D:\\", "E:\\", "F:\\"];
+  }
+
+  return ["/"];
+}
+
+function parseAllowedHosts(value: string | string[] | undefined, derivedHosts: string[]): string[] {
+  if (Array.isArray(value)) {
+    return normalizeAllowedHosts(value, derivedHosts);
+  }
+
   const rawHosts =
     value
       ?.split(",")
       .map((entry) => entry.trim())
       .filter(Boolean) ?? [];
 
-  return rawHosts.length > 0 ? rawHosts : ["localhost", "127.0.0.1"];
+  return normalizeAllowedHosts(rawHosts, derivedHosts);
+}
+
+function normalizeAllowedHosts(rawHosts: string[], derivedHosts: string[]): string[] {
+  const hosts = rawHosts.length > 0 ? rawHosts : derivedHosts;
+  if (hosts.includes("*")) return ["*"];
+  return Array.from(new Set(hosts.map((host) => host.trim()).filter(Boolean)));
 }
 
 function parseBoolean(value: string | undefined): boolean {
@@ -89,7 +105,13 @@ function parseTrustProxy(value: string | undefined): boolean | number {
 }
 
 function parseMinimalTools(env: NodeJS.ProcessEnv): boolean {
-  return env.DEVSPACE_TOOL_MODE === "minimal" || parseBoolean(env.DEVSPACE_MINIMAL_TOOLS);
+  if (env.DEVSPACE_TOOL_MODE === "minimal") return true;
+  if (env.DEVSPACE_TOOL_MODE === "full") return false;
+  if (env.DEVSPACE_TOOL_MODE) {
+    throw new Error(`Invalid DEVSPACE_TOOL_MODE: ${env.DEVSPACE_TOOL_MODE}`);
+  }
+  if (env.DEVSPACE_MINIMAL_TOOLS !== undefined) return parseBoolean(env.DEVSPACE_MINIMAL_TOOLS);
+  return true;
 }
 
 function parseLogLevel(value: string | undefined): LogLevel {
@@ -137,8 +159,8 @@ function parsePositiveInteger(value: string | undefined, fallback: number, name:
 }
 
 function parseToolNaming(value: string | undefined): ToolNamingMode {
-  if (!value || value === "legacy") return "legacy";
-  if (value === "short") return "short";
+  if (!value || value === "short") return "short";
+  if (value === "legacy") return "legacy";
 
   throw new Error(`Invalid DEVSPACE_TOOL_NAMING: ${value}`);
 }
@@ -156,8 +178,8 @@ function parseLoggingConfig(env: NodeJS.ProcessEnv): LoggingConfig {
 }
 
 function parseWidgetMode(value: string | undefined): WidgetMode {
-  if (!value || value === "changes") return "changes";
-  if (value === "off" || value === "full") return value;
+  if (!value || value === "full") return "full";
+  if (value === "off" || value === "changes") return value;
 
   throw new Error(`Invalid DEVSPACE_WIDGETS: ${value}`);
 }
@@ -165,7 +187,7 @@ function parseWidgetMode(value: string | undefined): WidgetMode {
 function parseRequiredSecret(value: string | undefined, name: string): string {
   const secret = value?.trim();
   if (!secret) {
-    throw new Error(`${name} is required for DevSpace OAuth. Generate one with: openssl rand -base64 32`);
+    throw new Error(`${name} is required for DevSpace OAuth. Run: devspace init`);
   }
   if (secret.length < 16) {
     throw new Error(`${name} must be at least 16 characters long.`);
@@ -173,9 +195,9 @@ function parseRequiredSecret(value: string | undefined, name: string): string {
   return secret;
 }
 
-function parseOAuthConfig(env: NodeJS.ProcessEnv): OAuthConfig {
+function parseOAuthConfig(env: NodeJS.ProcessEnv, ownerToken: string | undefined): OAuthConfig {
   return {
-    ownerToken: parseRequiredSecret(env.DEVSPACE_OAUTH_OWNER_TOKEN, "DEVSPACE_OAUTH_OWNER_TOKEN"),
+    ownerToken: parseRequiredSecret(env.DEVSPACE_OAUTH_OWNER_TOKEN ?? ownerToken, "DEVSPACE_OAUTH_OWNER_TOKEN"),
     accessTokenTtlSeconds: parsePositiveInteger(
       env.DEVSPACE_OAUTH_ACCESS_TOKEN_TTL_SECONDS,
       DEFAULT_OAUTH_ACCESS_TOKEN_TTL_SECONDS,
@@ -204,26 +226,57 @@ function defaultWorktreeRoot(): string {
 }
 
 function defaultAgentDir(): string {
-  return join(homedir(), ".pi", "agent");
+  return join(homedir(), ".codex");
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
+  const files = loadDevspaceFiles(env);
+  const host = env.HOST ?? files.config.host ?? "127.0.0.1";
+  const port = parsePort(env.PORT ?? files.config.port);
+  const publicBaseUrl = parsePublicBaseUrl(
+    env.DEVSPACE_PUBLIC_BASE_URL ?? files.config.publicBaseUrl ?? localPublicBaseUrl(host, port),
+  );
+  const derivedAllowedHosts = [
+    "localhost",
+    "127.0.0.1",
+    "::1",
+    host,
+    new URL(publicBaseUrl).hostname,
+    ...(files.config.allowedHosts ?? []),
+  ];
+
   return {
-    host: env.HOST ?? "127.0.0.1",
-    port: parsePort(env.PORT),
-    oauth: parseOAuthConfig(env),
-    allowedRoots: parseAllowedRoots(env.DEVSPACE_ALLOWED_ROOTS),
-    allowedHosts: parseAllowedHosts(env.DEVSPACE_ALLOWED_HOSTS),
-    publicBaseUrl: env.DEVSPACE_PUBLIC_BASE_URL ?? "https://agent.gitcms.blog",
+    host,
+    port,
+    oauth: parseOAuthConfig(env, files.auth.ownerToken),
+    allowedRoots: parseAllowedRoots(env.DEVSPACE_ALLOWED_ROOTS ?? files.config.allowedRoots),
+    allowedHosts: parseAllowedHosts(env.DEVSPACE_ALLOWED_HOSTS, derivedAllowedHosts),
+    publicBaseUrl,
     minimalTools: parseMinimalTools(env),
     toolNaming: parseToolNaming(env.DEVSPACE_TOOL_NAMING),
     widgets: parseWidgetMode(env.DEVSPACE_WIDGETS),
-    stateDir: resolve(env.DEVSPACE_STATE_DIR ?? defaultStateDir()),
-    worktreeRoot: resolve(expandHomePath(env.DEVSPACE_WORKTREE_ROOT ?? defaultWorktreeRoot())),
+    stateDir: resolve(expandHomePath(env.DEVSPACE_STATE_DIR ?? files.config.stateDir ?? defaultStateDir())),
+    worktreeRoot: resolve(expandHomePath(env.DEVSPACE_WORKTREE_ROOT ?? files.config.worktreeRoot ?? defaultWorktreeRoot())),
     skillsEnabled: env.DEVSPACE_SKILLS === undefined ? true : parseBoolean(env.DEVSPACE_SKILLS),
     skillPaths: parsePathList(env.DEVSPACE_SKILL_PATHS),
-    agentDir: resolve(expandHomePath(env.DEVSPACE_AGENT_DIR ?? defaultAgentDir())),
+    agentDir: resolve(expandHomePath(env.DEVSPACE_AGENT_DIR ?? files.config.agentDir ?? defaultAgentDir())),
     logging: parseLoggingConfig(env),
-    sshConnections: loadSshConnections(env.DEVSPACE_CONNECTIONS_FILE),
+    sshConnections: loadSshConnections(env.DEVSPACE_CONNECTIONS_FILE ?? files.config.connectionsFile),
   };
+}
+
+function parsePublicBaseUrl(value: string): string {
+  const parsed = new URL(value);
+  parsed.hash = "";
+  parsed.search = "";
+  parsed.pathname = parsed.pathname.replace(/\/+$/, "");
+  return parsed.toString().replace(/\/$/, "");
+}
+
+function localPublicBaseUrl(host: string, port: number): string {
+  const publicHost = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
+  const formattedHost = publicHost.includes(":") && !publicHost.startsWith("[")
+    ? `[${publicHost}]`
+    : publicHost;
+  return `http://${formattedHost}:${port}`;
 }
