@@ -1408,9 +1408,27 @@ export function createServer(config = loadConfig()): RunningServer {
 
   const oauthMetadata = createOAuthAuthorizationServerMetadata(config.publicBaseUrl, config.oauth.scopes);
   app.get(
-    ["/.well-known/oauth-authorization-server", "/.well-known/oauth-authorization-server/mcp"],
+    [
+      "/.well-known/oauth-authorization-server",
+      "/.well-known/oauth-authorization-server/mcp",
+      "/mcp/.well-known/oauth-authorization-server",
+      "/mcp/.well-known/openid-configuration",
+    ],
     (_req, res) => {
       res.json(oauthMetadata);
+    },
+  );
+
+  const protectedResourceMetadata = {
+    resource: resourceServerUrl.href,
+    authorization_servers: [oauthMetadata.issuer],
+    scopes_supported: config.oauth.scopes,
+    resource_name: "DevSpace",
+  };
+  app.get(
+    ["/.well-known/oauth-protected-resource/mcp", "/mcp/.well-known/oauth-protected-resource"],
+    (_req, res) => {
+      res.json(protectedResourceMetadata);
     },
   );
 
