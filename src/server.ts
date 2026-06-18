@@ -91,7 +91,7 @@ function createOAuthAuthorizationServerMetadata(publicBaseUrl: string, scopesSup
     scopes_supported: scopesSupported,
     revocation_endpoint: undefined,
     revocation_endpoint_auth_methods_supported: undefined,
-    registration_endpoint: undefined,
+    registration_endpoint: new URL("/register", baseUrl).href,
   };
 }
 
@@ -1426,7 +1426,11 @@ export function createServer(config = loadConfig()): RunningServer {
     resource_name: "DevSpace",
   };
   app.get(
-    ["/.well-known/oauth-protected-resource/mcp", "/mcp/.well-known/oauth-protected-resource"],
+    [
+      "/.well-known/oauth-protected-resource",
+      "/.well-known/oauth-protected-resource/mcp",
+      "/mcp/.well-known/oauth-protected-resource",
+    ],
     (_req, res) => {
       res.json(protectedResourceMetadata);
     },
