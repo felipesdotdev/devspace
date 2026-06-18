@@ -77,6 +77,24 @@ interface RunningServer {
   config: ServerConfig;
 }
 
+function createOAuthAuthorizationServerMetadata(publicBaseUrl: string, scopesSupported: string[]) {
+  const baseUrl = new URL(publicBaseUrl);
+  return {
+    issuer: baseUrl.href,
+    service_documentation: undefined,
+    authorization_endpoint: new URL("/authorize", baseUrl).href,
+    response_types_supported: ["code"],
+    code_challenge_methods_supported: ["S256"],
+    token_endpoint: new URL("/token", baseUrl).href,
+    token_endpoint_auth_methods_supported: ["client_secret_post", "none"],
+    grant_types_supported: ["authorization_code", "refresh_token"],
+    scopes_supported: scopesSupported,
+    revocation_endpoint: undefined,
+    revocation_endpoint_auth_methods_supported: undefined,
+    registration_endpoint: undefined,
+  };
+}
+
 type ToolContent =
   | { type: "text"; text: string }
   | { type: "image"; data: string; mimeType: string };
@@ -1386,6 +1404,14 @@ export function createServer(config = loadConfig()): RunningServer {
       scopesSupported: config.oauth.scopes,
       resourceName: "DevSpace",
     }),
+  );
+
+  const oauthMetadata = createOAuthAuthorizationServerMetadata(config.publicBaseUrl, config.oauth.scopes);
+  app.get(
+    ["/.well-known/oauth-authorization-server", "/.well-known/oauth-authorization-server/mcp"],
+    (_req, res) => {
+      res.json(oauthMetadata);
+    },
   );
 
   app.options("/mcp-app-assets/{*asset}", (_req, res) => {
