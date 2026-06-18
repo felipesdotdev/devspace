@@ -177,6 +177,11 @@ function parseLoggingConfig(env: NodeJS.ProcessEnv): LoggingConfig {
   };
 }
 
+function shouldEnableTrustProxyByDefault(publicBaseUrl: string): boolean {
+  const hostname = new URL(publicBaseUrl).hostname;
+  return !["localhost", "127.0.0.1", "::1"].includes(hostname);
+}
+
 function parseWidgetMode(value: string | undefined): WidgetMode {
   if (!value || value === "full") return "full";
   if (value === "off" || value === "changes") return value;
@@ -260,7 +265,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     skillsEnabled: env.DEVSPACE_SKILLS === undefined ? true : parseBoolean(env.DEVSPACE_SKILLS),
     skillPaths: parsePathList(env.DEVSPACE_SKILL_PATHS),
     agentDir: resolve(expandHomePath(env.DEVSPACE_AGENT_DIR ?? files.config.agentDir ?? defaultAgentDir())),
-    logging: parseLoggingConfig(env),
+    logging: (() => {
+      const logging = parseLoggingConfig(env);
+      if (env.DEVSPACE_TRUST_PROXY === undefined && shouldEnableTrustProxyByDefault(publicBaseUrl)) {
+        logging.trustProxy = 1;
+      }
+      return logging;
+    })(),
     sshConnections: loadSshConnections(env.DEVSPACE_CONNECTIONS_FILE ?? files.config.connectionsFile),
   };
 }

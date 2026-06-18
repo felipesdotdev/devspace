@@ -252,8 +252,12 @@ class FileOAuthClientsStore implements OAuthRegisteredClientsStore {
       return undefined;
     }
 
-    const existing = this.clients.get(clientId);
+    const existing = this.clients.get(clientId) ?? this.findFallbackClient(clientId);
     if (!existing) return undefined;
+
+    if (!this.clients.has(clientId)) {
+      this.clients.set(clientId, existing);
+    }
 
     if (existing.redirect_uris.includes(redirectUri)) {
       return existing;

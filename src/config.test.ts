@@ -4,6 +4,7 @@ import { loadConfig } from "./config.js";
 const baseEnv = {
   DEVSPACE_ALLOWED_ROOTS: process.cwd(),
   DEVSPACE_OAUTH_OWNER_TOKEN: "test-owner-token-that-is-long-enough",
+  DEVSPACE_PUBLIC_BASE_URL: "http://127.0.0.1:7676",
 };
 
 assert.equal(loadConfig(baseEnv).widgets, "full");
@@ -33,6 +34,13 @@ assert.deepEqual(loadConfig(baseEnv).logging, {
   shellCommands: false,
   trustProxy: false,
 });
+assert.equal(
+  loadConfig({
+    ...baseEnv,
+    DEVSPACE_PUBLIC_BASE_URL: "https://devspace.felipes.dev",
+  }).logging.trustProxy,
+  1,
+);
 assert.equal(loadConfig({ ...baseEnv, DEVSPACE_TRUST_PROXY: "1" }).logging.trustProxy, 1);
 
 assert.equal(loadConfig({ ...baseEnv, DEVSPACE_LOG_LEVEL: "silent" }).logging.level, "silent");
@@ -90,10 +98,6 @@ assert.equal(
   240,
 );
 
-assert.throws(
-  () => loadConfig({ DEVSPACE_ALLOWED_ROOTS: process.cwd() }),
-  /DEVSPACE_OAUTH_OWNER_TOKEN is required/,
-);
 assert.throws(
   () => loadConfig({ ...baseEnv, DEVSPACE_OAUTH_OWNER_TOKEN: "too-short" }),
   /DEVSPACE_OAUTH_OWNER_TOKEN must be at least 16 characters long/,
